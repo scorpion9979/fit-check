@@ -1,54 +1,49 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import Glyphs from "@/components/Glyphs";
-import SourceView from "@/components/views/SourceView";
-import SearchView from "@/components/views/SearchView";
-import SellView from "@/components/views/SellView";
-import BidsView from "@/components/views/BidsView";
-import type { DeckCard } from "@/lib/fitcheck/presenter";
-import { IconCheck, IconTabSource, IconSearch, IconTabSell, IconTabBids } from "@/components/icons";
+import DemandView from "@/components/views/DemandView";
+import MatchesView from "@/components/views/MatchesView";
+import BasketView from "@/components/views/BasketView";
+import type { MatchView } from "@/lib/fitcheck/matchView";
 
-type Tab = "source" | "search" | "sell" | "bids";
-
-function money(s: string): number {
-  return parseFloat(s.replace(/[^0-9.]/g, "")) || 0;
-}
-function qtyOf(s: string): number {
-  const m = s.match(/\d+/);
-  return m ? Number(m[0]) : 1;
-}
+type Tab = "demand" | "matches" | "basket";
 
 export default function FitCheckApp() {
-  const [tab, setTab] = useState<Tab>("source");
-  const [basketCount, setBasketCount] = useState(0);
-  const [basketValue, setBasketValue] = useState(0);
-  const [clearedBids, setClearedBids] = useState(0);
+  const [tab, setTab] = useState<Tab>("demand");
+  const [bidId, setBidId] = useState<string | null>(null);
+  const [basket, setBasket] = useState<MatchView[]>([]);
 
   const [toast, setToast] = useState<{ title: string; sub: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  const showToast = useCallback((title: string, sub: string) => {
+  const showToast = useCallback((title: string, sub = "") => {
     setToast({ title, sub });
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2700);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
-  const handleSource = useCallback(
-    (card: DeckCard) => {
-      setBasketCount((c) => c + 1);
-      setBasketValue((v) => v + money(card.cost) * qtyOf(card.qty));
-      showToast(`Sourced · ${card.title}`, `${card.qty} · ${card.cost}/unit added to basket`);
+  const handlePosted = useCallback(
+    (id: string) => {
+      setBidId(id);
+      setTab("matches");
+      showToast("Demand posted", "Matching against live supplier stock");
     },
     [showToast],
   );
 
-  const handleBid = useCallback(
-    (card: DeckCard) => {
-      showToast("Trait bid drafted", `Standing offer typed from ${card.title.toLowerCase()}`);
+  const addToBasket = useCallback(
+    (m: MatchView) => {
+      setBasket((prev) => (prev.some((b) => b.id === m.id) ? prev : [...prev, m]));
+      showToast("Added to basket", m.title);
     },
     [showToast],
   );
+
+  const removeFromBasket = useCallback((id: string) => {
+    setBasket((prev) => prev.filter((b) => b.id !== id));
+  }, []);
+
+  const basketValue = basket.reduce((a, b) => a + b.lotVal, 0);
 
   return (
     <div className="phone">
@@ -57,20 +52,30 @@ export default function FitCheckApp() {
         <div className="topbar">
           <div className="mark">Fit Check</div>
           <div className="basket">
-            Basket <b>{basketCount}</b> · <span>£{Math.round(basketValue)}</span>
+            Basket <b>{basket.length}</b> · <span>£{basketValue}</span>
           </div>
         </div>
 
         <div className="body">
-          {tab === "source" && <SourceView onSource={handleSource} onBid={handleBid} />}
-          {tab === "search" && <SearchView />}
-          {tab === "sell" && <SellView toast={showToast} onListed={() => setTab("bids")} />}
-          {tab === "bids" && <BidsView toast={showToast} onBook={setClearedBids} />}
+          {tab === "demand" && <DemandView onPosted={handlePosted} />}
+          {tab === "matches" && (
+            <MatchesView
+              bidId={bidId}
+              basketIds={basket.map((b) => b.id)}
+              onAdd={addToBasket}
+              onReviewBasket={() => setTab("basket")}
+            />
+          )}
+          {tab === "basket" && (
+            <BasketView basket={basket} onRemove={removeFromBasket} toast={showToast} />
+          )}
         </div>
 
         <div className={`toast${toast ? " show" : ""}`}>
           <div className="tic">
-            <IconCheck width={18} height={18} />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
           </div>
           <div>
             <div className="tt">{toast?.title}</div>
@@ -79,35 +84,37 @@ export default function FitCheckApp() {
         </div>
 
         <nav className="bnav">
-          <button className={`tab${tab === "source" ? " active" : ""}`} onClick={() => setTab("source")}>
+          <button className={`tab${tab === "demand" ? " active" : ""}`} onClick={() => setTab("demand")}>
             <span className="ico">
-              <IconTabSource />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 6h16M4 12h10M4 18h6" />
+                <circle cx="18" cy="16" r="3" />
+                <path d="M20.5 18.5L22 20" />
+              </svg>
             </span>
-            Source
-            {basketCount > 0 && <span className="badge">{basketCount}</span>}
+            Demand
           </button>
-          <button className={`tab${tab === "search" ? " active" : ""}`} onClick={() => setTab("search")}>
+          <button className={`tab${tab === "matches" ? " active" : ""}`} onClick={() => setTab("matches")}>
             <span className="ico">
-              <IconSearch />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round">
+                <rect x="4" y="3" width="16" height="18" rx="3" />
+                <path d="M4 15l4-3 4 3 4-4 4 3" strokeLinecap="round" />
+              </svg>
             </span>
-            Search
+            Matches
           </button>
-          <button className={`tab${tab === "sell" ? " active" : ""}`} onClick={() => setTab("sell")}>
+          <button className={`tab${tab === "basket" ? " active" : ""}`} onClick={() => setTab("basket")}>
             <span className="ico">
-              <IconTabSell />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 8h14l-1 11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z" />
+                <path d="M9 8V6a3 3 0 0 1 6 0v2" />
+              </svg>
             </span>
-            Sell
-          </button>
-          <button className={`tab${tab === "bids" ? " active" : ""}`} onClick={() => setTab("bids")}>
-            <span className="ico">
-              <IconTabBids />
-            </span>
-            Bids
-            {clearedBids > 0 && <span className="badge">{clearedBids}</span>}
+            Basket
+            {basket.length > 0 && <span className="badge">{basket.length}</span>}
           </button>
         </nav>
       </div>
-      <Glyphs />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBid, getItems, getSuppliers } from "@/lib/db/jsonStore";
-import { runMatcherLLM } from "@/lib/agents/matchAgent";
+import { runMatchAgent } from "@/lib/agents/matchAgent";
+import { toMatchView } from "@/lib/fitcheck/matchView";
 import { DEMO_BID_ID } from "@/lib/schema/bid";
 
 export const runtime = "nodejs";
@@ -18,14 +19,10 @@ export async function GET(request: Request) {
 
     const items = getItems();
     const suppliers = getSuppliers();
-    const { results, cards } = await runMatcherLLM(bid, items, suppliers);
+    const scored = await runMatchAgent(bid, items, suppliers);
+    const matches = scored.map((m) => toMatchView(bid, m));
 
-    return NextResponse.json({
-      bid,
-      results,
-      cards,
-      count: cards.length,
-    });
+    return NextResponse.json({ bid, matches, count: matches.length });
   } catch (error) {
     console.error("Match error:", error);
     return NextResponse.json({ error: "Failed to run matcher" }, { status: 500 });

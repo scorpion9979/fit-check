@@ -3,6 +3,7 @@ import { Bid } from "@/lib/schema/bid";
 import {
   COLORS,
   CONDITION_GRADES,
+  ConditionGrade,
   DEMO_CATEGORIES,
   ERAS,
   FITS,
@@ -50,8 +51,31 @@ const SYSTEM = [
   "If a hard filter is unstated, choose a sensible default (condition_min 'B', gender 'unisex', a reasonable max price).",
 ].join(" ");
 
+export interface DemandOverrides {
+  /** Explicit max price per unit from the form — authoritative over the model's guess. */
+  maxPriceGbp?: number;
+  /** Explicit minimum grade from the form — authoritative over the model's guess. */
+  conditionMin?: ConditionGrade;
+}
+
+/** Apply form-provided hard filters over whatever the parser produced. */
+function applyOverrides(result: ParseResult, overrides?: DemandOverrides): ParseResult {
+  if (!overrides) return result;
+  if (typeof overrides.maxPriceGbp === "number" && overrides.maxPriceGbp > 0) {
+    result.bid.hard.max_price_gbp = overrides.maxPriceGbp;
+  }
+  if (overrides.conditionMin) {
+    result.bid.hard.condition_min = overrides.conditionMin;
+  }
+  return result;
+}
+
 /** Demand agent: free text -> structured Bid + phrase mappings via the AI Gateway. */
-export async function runDemandAgent(query: string, buyerId = "buyer_001"): Promise<ParseResult> {
+export async function runDemandAgent(
+  query: string,
+  buyerId = "buyer_001",
+  overrides?: DemandOverrides,
+): Promise<ParseResult> {
   const now = new Date();
   try {
     const out = await generateJSON({
@@ -86,9 +110,9 @@ export async function runDemandAgent(query: string, buyerId = "buyer_001"): Prom
       raw_query: query,
     };
 
-    return { bid, mappings: out.mappings };
+    return applyOverrides({ bid, mappings: out.mappings }, overrides);
   } catch {
     // Safety net: fall back to the deterministic parser so the route never fails.
-    return parseDemand(query, buyerId);
+    return applyOverrides(parseDemand(query, buyerId), overrides);
   }
 }
