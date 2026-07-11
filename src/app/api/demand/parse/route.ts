@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
-import { parseDemand } from "@/lib/demand/parseDemand";
+import { runDemandAgent } from "@/lib/agents/demandAgent";
 import { saveBid } from "@/lib/db/jsonStore";
 import { BidSchema } from "@/lib/schema/bid";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
@@ -11,7 +14,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
-    const { bid, mappings } = parseDemand(query, body.buyer_id);
+    const { bid, mappings } = await runDemandAgent(query, body.buyer_id);
     const saved = saveBid(bid);
 
     return NextResponse.json({

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
-import { extractSpec } from "@/lib/fitcheck/extract";
+import { runSellAgent } from "@/lib/agents/sellAgent";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 /**
- * POST /api/sell/extract — "photo → spec" typing pass.
+ * POST /api/sell/extract — "photo → spec" typing pass via the AI Gateway.
  * Body: { seed?: number }. Returns a closed-enum draft with per-field confidence.
  */
 export async function POST(request: Request) {
@@ -14,7 +17,7 @@ export async function POST(request: Request) {
     } catch {
       // empty body is fine — default seed
     }
-    const draft = extractSpec(seed);
+    const draft = await runSellAgent(seed);
     return NextResponse.json({ draft });
   } catch (error) {
     console.error("Extract spec error:", error);

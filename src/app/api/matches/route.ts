@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getBid, getItems, getSuppliers } from "@/lib/db/jsonStore";
-import { runMatcher } from "@/lib/matching/matcher";
+import { runMatcherLLM } from "@/lib/agents/matchAgent";
 import { DEMO_BID_ID } from "@/lib/schema/bid";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
@@ -15,7 +18,7 @@ export async function GET(request: Request) {
 
     const items = getItems();
     const suppliers = getSuppliers();
-    const { results, cards } = runMatcher(bid, items, suppliers);
+    const { results, cards } = await runMatcherLLM(bid, items, suppliers);
 
     return NextResponse.json({
       bid,

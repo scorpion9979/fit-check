@@ -10,11 +10,13 @@
     "seed": "bun run scripts/seed.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.2.0",
+    "ai": "6.0.172",
     "lucide-react": "^0.525.0",
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "zod": "^3.25.67",
+    "zod": "^3.25.76",
     "zustand": "^5.0.6"
   },
   "devDependencies": {

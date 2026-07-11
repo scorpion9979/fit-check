@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSalesHistory, getSuppliers } from "@/lib/db/jsonStore";
 import { runSellerSummaryAgent } from "@/lib/agent/sellerSummaryAgent";
+import { enhanceSpecialtyLine } from "@/lib/agents/sellerAgent";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -25,7 +29,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Seller not found" }, { status: 404 });
   }
 
-  const card = runSellerSummaryAgent(supplier, sales);
+  const card = await enhanceSpecialtyLine(runSellerSummaryAgent(supplier, sales));
   return NextResponse.json({ card });
 }
 
@@ -44,7 +48,7 @@ export async function POST(request: Request) {
     }
 
     const sales = getSalesHistory();
-    const card = runSellerSummaryAgent(supplier, sales);
+    const card = await enhanceSpecialtyLine(runSellerSummaryAgent(supplier, sales));
 
     return NextResponse.json({ card });
   } catch (error) {
