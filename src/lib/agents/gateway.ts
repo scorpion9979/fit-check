@@ -27,6 +27,7 @@ interface GenerateJSONOptions<T extends z.ZodType> {
   temperature?: number;
   maxOutputTokens?: number;
   timeoutMs?: number;
+  maxRetries?: number;
 }
 
 /**
@@ -42,6 +43,7 @@ export async function generateJSON<T extends z.ZodType>({
   temperature = 0,
   maxOutputTokens = 1024,
   timeoutMs = 45000,
+  maxRetries = 1,
 }: GenerateJSONOptions<T>): Promise<z.infer<T>> {
   if (!gatewayConfigured()) {
     throw new AgentUnavailableError("AI Gateway not configured");
@@ -54,7 +56,7 @@ export async function generateJSON<T extends z.ZodType>({
       prompt,
       temperature,
       maxOutputTokens,
-      maxRetries: 1,
+      maxRetries,
       abortSignal: AbortSignal.timeout(timeoutMs),
       providerOptions: { gateway: { tags: [`feature:${feature}`] } },
     });
