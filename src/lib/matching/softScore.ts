@@ -4,7 +4,6 @@ import { Color, Era, Fit, StyleTag } from "../schema/enums";
 
 function jaccard<T>(want: T[], itemValues: T[]): number {
   if (want.length === 0) return 0;
-  const wantSet = new Set(want);
   const itemSet = new Set(itemValues);
   const intersection = want.filter((v) => itemSet.has(v)).length;
   const union = new Set([...want, ...itemValues]).size;
