@@ -8,28 +8,55 @@ import { hardFilter } from "@/lib/matching/hardFilter";
 import { runMatcher } from "@/lib/matching/matcher";
 import { generateJSON } from "./gateway";
 
+// Cap how many hard-filter survivors the agent scores in one batched call.
+const MAX_CANDIDATES = 10;
+
+// Compact per-item judgment — keeps output small so one batched call stays fast.
 const AssessmentSchema = z.object({
+  item_id: z.string(),
   match_score: z.number().min(0).max(100),
   match_label: z.enum(MATCH_LABELS),
   match_reason: z.string(),
-  supplier_note: z.string(),
-  pricing_note: z.string(),
   recommended_action: z.enum(RECOMMENDED_ACTIONS),
   risk_flags: z.array(z.string()),
 });
+const BatchSchema = z.object({ assessments: z.array(AssessmentSchema) });
 
 const SYSTEM = [
   "You are a resale sourcing match agent for Fleek.",
-  "You judge how well a supplier's lot fits a buyer's trait bid. The lot has already passed the buyer's hard filters (category, size, condition, price, gender).",
-  "Score the SOFT-TRAIT fit 0..100 using weighted overlap of the buyer's weighted preferences (era, colours, fit, style) against the item's actual traits — higher weight traits matter more.",
-  "Write a concise, factual match_reason grounded only in the given traits; a supplier_note from the supplier's stats; and a pricing_note comparing the ask to the supplier's category average when available.",
-  "risk_flags: short factual warnings (e.g. low grade accuracy, high dispute rate, weak trait overlap) or an empty list.",
-  "recommended_action: make_offer (strong fit + reliable supplier), handpick (bundle listings), save_for_later, or pass (weak fit).",
-  "Be precise and non-promotional. Do not invent facts beyond the provided data.",
+  "You are given ONE buyer trait bid and a LIST of candidate lots that already passed the buyer's hard filters (category, size, condition, price, gender).",
+  "For EACH candidate, score the SOFT-TRAIT fit 0..100 as a weighted overlap of the buyer's weighted preferences (era, colours, fit, style) against that item's actual traits — higher-weighted traits matter more.",
+  "Return one assessment per candidate, keyed by its exact item_id. Keep match_reason to one concise sentence grounded only in the given traits.",
+  "risk_flags: short factual warnings (low grade accuracy, high dispute rate, weak overlap) or an empty list.",
+  "recommended_action: make_offer (strong fit + reliable supplier), handpick (bundle listing), save_for_later, or pass (weak fit).",
+  "Be precise and non-promotional. Never invent facts beyond the provided data.",
 ].join(" ");
 
-function itemFacts(item: ItemMetadata): string {
-  return JSON.stringify({
+/** Factual supplier line — a stat lookup, computed rather than generated. */
+function supplierNote(supplier: SupplierProfile, stats: ReturnType<typeof getCategoryStats>): string {
+  if (stats) {
+    return `${supplier.name} has ${Math.round(stats.fill_rate * 100)}% fill rate in this category with ${Math.round(
+      stats.avg_grade_accuracy * 100,
+    )}% grade accuracy.`;
+  }
+  return `${supplier.name} — trust score ${supplier.overall_trust_score}/100.`;
+}
+
+/** Factual pricing line — compares the ask to the supplier's 90d average. */
+function pricingNote(item: ItemMetadata, avg?: number): string {
+  if (avg == null) return `£${item.price_gbp} listed.`;
+  if (item.price_gbp < avg) return `£${item.price_gbp} — below the £${avg} 90d average.`;
+  if (item.price_gbp > avg) return `£${item.price_gbp} — above the £${avg} 90d average.`;
+  return `£${item.price_gbp} — matches the 90d average.`;
+}
+
+function candidateFacts(bid: Bid, item: ItemMetadata, supplier: SupplierProfile) {
+  const stats = getCategoryStats(supplier, bid.hard.category);
+  const pricing = supplier.pricing_history.find(
+    (p) => p.category === bid.hard.category && p.condition_grade === item.condition.grade,
+  );
+  return {
+    item_id: item.item_id,
     brand: item.brand.name,
     era: item.era,
     fit: item.fit,
@@ -40,7 +67,16 @@ function itemFacts(item: ItemMetadata): string {
     price_gbp: item.price_gbp,
     listing_type: item.listing_type,
     defects: item.defects.map((d) => `${d.type}/${d.severity}`),
-  });
+    supplier: {
+      name: supplier.name,
+      trust: supplier.overall_trust_score,
+      fill_rate: stats?.fill_rate,
+      grade_accuracy: stats?.avg_grade_accuracy,
+      response_hours: stats?.avg_response_hours,
+      dispute_rate: stats?.dispute_rate,
+      category_avg_price_gbp: pricing?.avg_price_gbp,
+    },
+  };
 }
 
 function generateTitle(item: ItemMetadata): string {
@@ -55,36 +91,10 @@ function avgConfidence(item: ItemMetadata): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-async function assess(bid: Bid, item: ItemMetadata, supplier: SupplierProfile) {
-  const stats = getCategoryStats(supplier, bid.hard.category);
-  const pricing = supplier.pricing_history.find(
-    (p) => p.category === bid.hard.category && p.condition_grade === item.condition.grade,
-  );
-  const prompt = [
-    `Buyer soft preferences (with weights): ${JSON.stringify(bid.soft)}`,
-    `Item traits: ${itemFacts(item)}`,
-    `Supplier: ${supplier.name}, trust ${supplier.overall_trust_score}/100` +
-      (stats
-        ? `, category fill_rate ${stats.fill_rate}, grade_accuracy ${stats.avg_grade_accuracy}, response_hrs ${stats.avg_response_hours}, dispute_rate ${stats.dispute_rate}`
-        : ", no category stats"),
-    pricing
-      ? `Supplier 90d ${item.condition.grade}-grade avg price: £${pricing.avg_price_gbp}`
-      : "No pricing history for this grade.",
-    "Assess the match.",
-  ].join("\n");
-
-  return generateJSON({
-    schema: AssessmentSchema,
-    feature: "match",
-    system: SYSTEM,
-    prompt,
-    maxOutputTokens: 512,
-  });
-}
-
 /**
- * LLM matcher: hard-filter (objective gate), then the match agent scores + narrates
- * each candidate. Falls back to the deterministic matcher if the gateway is down.
+ * LLM matcher: hard-filter (objective gate), then ONE batched agent call scores +
+ * narrates every candidate. Falls back to the deterministic matcher if the gateway
+ * is down or returns nothing usable.
  */
 export async function runMatcherLLM(
   bid: Bid,
@@ -97,23 +107,44 @@ export async function runMatcherLLM(
   const candidates = items
     .filter((item) => hardFilter(bid, item).pass)
     .map((item) => ({ item, supplier: supplierMap.get(item.supplier_id) }))
-    .filter((c): c is { item: ItemMetadata; supplier: SupplierProfile } => Boolean(c.supplier));
+    .filter((c): c is { item: ItemMetadata; supplier: SupplierProfile } => Boolean(c.supplier))
+    .slice(0, MAX_CANDIDATES);
 
   if (!candidates.length) return { results: [], cards: [] };
 
-  let scored: {
-    item: ItemMetadata;
-    supplier: SupplierProfile;
-    a: z.infer<typeof AssessmentSchema>;
-  }[];
+  let assessments: z.infer<typeof AssessmentSchema>[];
   try {
-    scored = await Promise.all(
-      candidates.map(async ({ item, supplier }) => ({ item, supplier, a: await assess(bid, item, supplier) })),
-    );
+    const facts = candidates.map(({ item, supplier }) => candidateFacts(bid, item, supplier));
+    const out = await generateJSON({
+      schema: BatchSchema,
+      feature: "match",
+      system: SYSTEM,
+      prompt: [
+        `Buyer soft preferences (with weights): ${JSON.stringify(bid.soft)}`,
+        `Candidate lots (${facts.length}):`,
+        JSON.stringify(facts),
+        "Return an assessment for every candidate, keyed by item_id.",
+      ].join("\n"),
+      maxOutputTokens: 1600,
+      timeoutMs: 60000,
+    });
+    assessments = out.assessments;
+    if (!assessments.length) return runMatcher(bid, items, suppliers);
   } catch {
-    // Any candidate failing means the gateway is unhealthy — fall back wholesale.
     return runMatcher(bid, items, suppliers);
   }
+
+  const byId = new Map(assessments.map((a) => [a.item_id, a]));
+  const scored = candidates
+    .map(({ item, supplier }) => {
+      const a = byId.get(item.item_id);
+      return a ? { item, supplier, a } : null;
+    })
+    .filter((s): s is { item: ItemMetadata; supplier: SupplierProfile; a: z.infer<typeof AssessmentSchema> } =>
+      Boolean(s),
+    );
+
+  if (!scored.length) return runMatcher(bid, items, suppliers);
 
   scored.sort((x, y) => y.a.match_score - x.a.match_score);
   const top = scored.slice(0, 10);
@@ -125,6 +156,9 @@ export async function runMatcherLLM(
     const rank = i + 1;
     const score01 = a.match_score / 100;
     const stats = getCategoryStats(supplier, bid.hard.category);
+    const pricing = supplier.pricing_history.find(
+      (p) => p.category === bid.hard.category && p.condition_grade === item.condition.grade,
+    );
 
     results.push({
       match_id: `match_${bid.bid_id}_${item.item_id}`,
@@ -173,8 +207,8 @@ export async function runMatcherLLM(
       },
       narrative: {
         match_reason: a.match_reason,
-        supplier_note: a.supplier_note,
-        pricing_note: a.pricing_note,
+        supplier_note: supplierNote(supplier, stats),
+        pricing_note: pricingNote(item, pricing?.avg_price_gbp),
         recommended_action: a.recommended_action,
         risk_flags: a.risk_flags,
       },
